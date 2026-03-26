@@ -359,6 +359,56 @@ Save markdown to `digests/digest_{run_id}_{date}.md`.
 
 ---
 
+## Synthesis model — interface specification
+
+See `synthesis_model_spec.md` for the full spec (v0.1, draft). Summary below.
+
+### Shared types
+
+All fetchers share `Author` and `Paper` dataclasses defined in `shared/types.py`:
+
+- **`Author`**: `name` (required), `openalex_id`, `orcid` (optional; used for priority author matching)
+- **`Paper`**: identity fields (DOI, arXiv ID, OpenAlex ID — at least one required), content (title, abstract, authors), provenance (journal, ISSN, published date, source), and URL. DOIs normalised to lowercase with `https://doi.org/` stripped. `None` for genuinely missing fields, never empty strings.
+
+### Fetcher contracts
+
+| Fetcher | Signature | Returns |
+|---|---|---|
+| **OpenAlex** | `fetch_openalex(issnl_list, date_from, date_to)` | `list[Paper]` |
+| **arXiv** | `fetch_arxiv(categories, date_from, date_to)` | `list[Paper]` |
+| **Bluesky** | `fetch_bluesky(handles, date_from, date_to)` | `list[BlueskySighting]` |
+
+- Bluesky returns `BlueskySighting` (doi, arxiv_id, handle, post_url, posted_at, post_text) — used to *annotate* papers from the other fetchers, not as standalone records.
+- Fetchers are not responsible for deduplication.
+
+### Synthesis pipeline (7 steps)
+
+1. **Merge & dedup** — combine OpenAlex + arXiv papers. Dedup by DOI → arXiv ID → fuzzy title match (Levenshtein ≤ 5). Merged records keep all non-None fields from both sources.
+2. **Attach Bluesky sightings** — match by DOI or arXiv ID. Unmatched sightings discarded.
+3. **Score** — `final_score = (cosine_sim(paper_embedding, profile_embedding) × weight) + journal_bonus + author_bonus + bluesky_bonus`. Papers with no abstract score 0.0 but kept if Bluesky-mentioned or author-matched.
+4. **Classify into sections** — "People you follow" (has Bluesky sightings) → "From your field" (author match or tier-1 journal + threshold) → "Worth noticing" (everything else above threshold). Trending flag if ≥ 2 distinct handles mention a paper.
+5. **Summarise** — one Ollama call per paper (up to 5 concurrent), producing `SUMMARY` (2-3 sentences) and `RELEVANCE` (1 sentence).
+6. **Section intros** — one Ollama call per section to write a 2-3 sentence thematic intro.
+7. **Assemble markdown** — structured digest saved to `digests/digest_{YYYY-MM-DD}.md`.
+
+### Synthesis model output
+
+`DigestResult` dataclass containing: run metadata (run_id, timestamps, paper counts), the full markdown digest, and `list[ScoredPaperRecord]` for DB persistence.
+
+### Scope boundaries
+
+The synthesis model does **not**: call APIs directly, read/write config, manage the database, compute embeddings (passed in), or handle scheduling.
+
+### Open questions
+
+1. Include Bluesky post text excerpts if commentary is informative (length > 80 chars after URL removal)?
+2. Make trending threshold (currently ≥ 2 handles) configurable?
+3. Per-section caps vs global cap on total papers?
+4. Add a "titles only" appendix for no-abstract papers without Bluesky/author signal?
+5. Confirm arXiv `journal_ref` reliability for preprint vs published version merging.
+
+---
+
 ## FastAPI routes — `main.py`
 
 | method | path | description |
