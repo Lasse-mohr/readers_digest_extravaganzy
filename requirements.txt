@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+apscheduler
+httpx
+feedparser
+python-markdown
+sentence-transformers
+torch          # CPU-only is fine: pip install torch --index-url https://download.pytorch.org/whl/cpu
+numpy
+python-levenshtein
+pyyaml
+jinja2
