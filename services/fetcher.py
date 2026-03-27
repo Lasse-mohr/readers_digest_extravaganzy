@@ -27,6 +27,8 @@ from shared.types import Author, Paper
 ARXIV_API = "https://export.arxiv.org/api/query"
 MAX_RESULTS_PER_REQUEST = 200
 REQUEST_DELAY = 1.0  # seconds between paginated requests
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 3.0  # seconds; doubles on each retry
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -83,9 +85,26 @@ async def _fetch_page(
         "sortBy": "submittedDate",
         "sortOrder": "descending",
     }
-    response = await client.get(ARXIV_API, params=params, timeout=30.0)
-    response.raise_for_status()
-    return feedparser.parse(response.text)
+    last_exc: Optional[Exception] = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = await client.get(ARXIV_API, params=params, timeout=30.0)
+        except httpx.TimeoutException as exc:
+            last_exc = exc
+            backoff = INITIAL_BACKOFF * (2 ** attempt)
+            print(f"  arXiv timeout — retrying in {backoff:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+            await asyncio.sleep(backoff)
+            continue
+        if response.status_code in (429, 500, 502, 503):
+            backoff = INITIAL_BACKOFF * (2 ** attempt)
+            print(f"  arXiv {response.status_code} — retrying in {backoff:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+            await asyncio.sleep(backoff)
+            continue
+        response.raise_for_status()
+        return feedparser.parse(response.text)
+    if last_exc is not None:
+        raise last_exc
+    response.raise_for_status()  # raise after final retry
 
 
 async def fetch_arxiv(
@@ -105,7 +124,12 @@ async def fetch_arxiv(
     async with httpx.AsyncClient() as client:
         start = 0
         while True:
-            feed = await _fetch_page(client, query, start, MAX_RESULTS_PER_REQUEST)
+            try:
+                feed = await _fetch_page(client, query, start, MAX_RESULTS_PER_REQUEST)
+            except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+                print(f"  ⚠ arXiv fetch failed after retries: {exc}")
+                print(f"  Returning {len(papers)} papers collected so far.")
+                break
 
             entries = feed.get("entries", [])
             if not entries:

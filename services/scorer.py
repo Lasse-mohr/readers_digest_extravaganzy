@@ -76,7 +76,7 @@ def _get_model():
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("allenai-specter2")
+        _model = SentenceTransformer("allenai/specter2_base")
     return _model
 
 

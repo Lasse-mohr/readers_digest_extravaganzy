@@ -5,3 +5,17 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .env
+
+# User config (contains personal research profile, handles, etc.)
+config.yaml
+
+# Generated digests
+digests/
+
+# Egg / build artifacts
+*.egg-info/
+dist/
+build/
+
+# Sentence-transformers / HuggingFace model cache
+.cache/

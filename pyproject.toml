@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "readers-digest-extravaganzy"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlmodel",
+    "apscheduler",
+    "httpx",
+    "feedparser",
+    "markdown",
+    "sentence-transformers",
+    "torch",
+    "numpy",
+    "python-levenshtein",
+    "pyyaml",
+    "jinja2",
+]
+
+[tool.setuptools.packages.find]
+include = ["services*", "shared*", "db*", "tests*"]

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/opt/anaconda3/bin/conda run:*)",
+      "Bash(/opt/anaconda3/envs/readers-digest/bin/python -m tests.smoke_test 2>&1)",
+      "Bash(/opt/anaconda3/envs/readers-digest/bin/pip install:*)",
+      "Bash(/opt/anaconda3/envs/readers-digest/bin/python -c \"\nimport asyncio\nimport httpx\n\nasync def test\\(\\):\n    async with httpx.AsyncClient\\(\\) as client:\n        resp = await client.post\\('http://localhost:11434/api/generate', json={\n            'model': 'qwen2.5:7b',\n            'prompt': 'Say hello in one sentence.',\n            'stream': False,\n        }, timeout=60.0\\)\n        print\\('Status:', resp.status_code\\)\n        print\\('Response:', resp.json\\(\\)['response'][:200]\\)\n\nasyncio.run\\(test\\(\\)\\)\n\")"
+    ]
+  }
+}
