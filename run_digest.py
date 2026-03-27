@@ -26,16 +26,53 @@ async def main():
     print(f"Date window: {date_from} → {date_to}")
     print()
 
-    # ── 1. Fetch arXiv ─────────────────────────────────────────────
-    from services.fetcher import fetch_arxiv
+    # ── 1. Fetch arXiv + OpenAlex ──────────────────────────────────
+    from services.fetcher import run_fetch
+    from services.openalex_client import init_openalex
+    from shared.types import Author
+    from shared.types import Paper as SharedPaper
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
 
-    print("Fetching from arXiv...")
-    arxiv_papers = await fetch_arxiv(
-        categories=cfg["arxiv_categories"],
-        date_from=date_from,
-        date_to=date_to,
+    api_key = os.environ.get("OPENALEX_API_KEY")
+    if not api_key:
+        print("ERROR: OPENALEX_API_KEY not set in .env — aborting.")
+        sys.exit(1)
+    init_openalex(api_key)
+
+    issns = [j["issn"] for j in cfg["journals"]]
+    print(f"Fetching from arXiv ({len(cfg['arxiv_categories'])} categories) "
+          f"and OpenAlex ({len(issns)} journals)...")
+    db_papers = await run_fetch(
+        issns=issns,
+        arxiv_categories=cfg["arxiv_categories"],
+        from_date=date_from,
+        to_date=date_to,
     )
-    print(f"  {len(arxiv_papers)} papers from arXiv")
+    print(f"  {len(db_papers)} papers after fetch and dedup")
+
+    # Convert db.database.Paper → shared.types.Paper for the scorer
+    def _to_shared(p) -> SharedPaper:
+        authors = [
+            Author(name=a.get("name", ""), openalex_id=a.get("openalex_id"))
+            for a in (p.authors or [])
+        ]
+        return SharedPaper(
+            doi=p.doi,
+            arxiv_id=p.arxiv_id,
+            openalex_id=p.openalex_id,
+            title=p.title,
+            abstract=p.abstract,
+            authors=authors,
+            journal=p.journal,
+            journal_issn=None,
+            published_date=p.published_date,
+            source=p.source,
+            url=None,
+        )
+
+    all_papers = [_to_shared(p) for p in db_papers]
 
     # ── 2. Fetch Bluesky ───────────────────────────────────────────
     from services.bluesky import fetch_bluesky
@@ -58,8 +95,8 @@ async def main():
         score_papers,
     )
 
-    merged = merge_and_dedup(papers_openalex=[], papers_arxiv=arxiv_papers)
-    print(f"  {len(merged)} papers after dedup")
+    merged = merge_and_dedup(papers_openalex=[], papers_arxiv=all_papers)
+    print(f"  {len(merged)} papers after scorer dedup")
 
     # ── 2b. Promote trending Bluesky sightings to papers ─────────
     from services.bluesky import promote_trending_sightings
