@@ -20,3 +20,6 @@ build/
 
 # Sentence-transformers / HuggingFace model cache
 .cache/
+
+# don't push individual digests
+digests/
