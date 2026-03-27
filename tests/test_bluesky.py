@@ -4,13 +4,15 @@ import asyncio
 import unittest
 from datetime import date, timedelta
 
-from shared.types import BlueskySighting
+from shared.types import BlueskyEngagement, BlueskySighting
 from services.bluesky import (
     extract_paper_id,
     extract_urls_from_post,
     fetch_bluesky,
     _parse_post_date,
     _get_post_url,
+    _get_engagement,
+    _make_commentary,
     _make_sighting,
 )
 
@@ -136,14 +138,123 @@ class TestGetPostUrl(unittest.TestCase):
         assert url == "https://bsky.app/profile/user.bsky.social/post/xyz789"
 
 
+class TestGetEngagement(unittest.TestCase):
+    """Unit tests for _get_engagement."""
+
+    def test_all_counts(self) -> None:
+        post = {
+            "post": {
+                "likeCount": 42,
+                "replyCount": 5,
+                "repostCount": 10,
+                "quoteCount": 3,
+            }
+        }
+        eng = _get_engagement(post)
+        assert isinstance(eng, BlueskyEngagement)
+        assert eng.like_count == 42
+        assert eng.reply_count == 5
+        assert eng.repost_count == 10
+        assert eng.quote_count == 3
+        assert eng.total == 60
+
+    def test_missing_counts_default_zero(self) -> None:
+        post = {"post": {"likeCount": 7}}
+        eng = _get_engagement(post)
+        assert eng.like_count == 7
+        assert eng.reply_count == 0
+        assert eng.repost_count == 0
+        assert eng.quote_count == 0
+        assert eng.total == 7
+
+    def test_empty_post(self) -> None:
+        eng = _get_engagement({"post": {}})
+        assert eng.total == 0
+
+
+class TestMakeCommentary(unittest.TestCase):
+    """Unit tests for _make_commentary."""
+
+    def test_strips_urls(self) -> None:
+        text = "Great paper! https://doi.org/10.1038/test Check it out"
+        commentary, has = _make_commentary(text)
+        assert commentary == "Great paper!  Check it out"
+        assert has is False  # under 80 chars
+
+    def test_long_commentary(self) -> None:
+        text = (
+            "This is a really insightful paper that changes how we think about "
+            "protein folding and its implications for drug design https://example.com/paper"
+        )
+        commentary, has = _make_commentary(text)
+        assert "https" not in commentary
+        assert has is True
+
+    def test_url_only(self) -> None:
+        commentary, has = _make_commentary("https://doi.org/10.1038/test")
+        assert commentary is None
+        assert has is False
+
+    def test_none_text(self) -> None:
+        commentary, has = _make_commentary(None)
+        assert commentary is None
+        assert has is False
+
+
+class TestEngagementScore(unittest.TestCase):
+    """Unit tests for BlueskySighting.engagement_score."""
+
+    def _sighting(self, total: int) -> BlueskySighting:
+        """Helper to build a sighting with a given total engagement."""
+        return BlueskySighting(
+            doi="10.1038/test", arxiv_id=None, handle="u.bsky.social",
+            post_url="https://bsky.app/profile/u.bsky.social/post/x",
+            posted_at=date(2025, 3, 20),
+            engagement=BlueskyEngagement(
+                like_count=total, reply_count=0, repost_count=0, quote_count=0,
+            ),
+        )
+
+    def test_zero_engagement(self) -> None:
+        s = self._sighting(0)
+        assert s.engagement_score == 0.0
+
+    def test_ten_engagement(self) -> None:
+        score = self._sighting(10).engagement_score
+        assert 0.45 < score < 0.55, f"Expected ~0.5, got {score}"
+
+    def test_hundred_engagement(self) -> None:
+        score = self._sighting(100).engagement_score
+        assert score == 1.0
+
+    def test_thousand_capped(self) -> None:
+        score = self._sighting(1000).engagement_score
+        assert score == 1.0
+
+    def test_no_engagement_object(self) -> None:
+        s = BlueskySighting(
+            doi="10.1038/test", arxiv_id=None, handle="u.bsky.social",
+            post_url="https://bsky.app/profile/u.bsky.social/post/x",
+            posted_at=date(2025, 3, 20),
+        )
+        assert s.engagement_score == 0.0
+
+    def test_monotonically_increasing(self) -> None:
+        scores = [self._sighting(n).engagement_score for n in [0, 1, 5, 10, 50, 100]]
+        for i in range(len(scores) - 1):
+            assert scores[i] < scores[i + 1], f"Not monotonic at {i}: {scores}"
+
+
 class TestMakeSighting(unittest.TestCase):
     """Unit tests for _make_sighting."""
 
     def test_doi_sighting(self) -> None:
+        eng = BlueskyEngagement(like_count=10, reply_count=2, repost_count=3, quote_count=1)
         s = _make_sighting(
             "doi", "10.1038/test", "user.bsky.social",
             "https://bsky.app/profile/user.bsky.social/post/abc",
             date(2025, 3, 20), "Great paper!",
+            eng, "Great paper!", False,
         )
         assert s is not None
         assert isinstance(s, BlueskySighting)
@@ -151,6 +262,11 @@ class TestMakeSighting(unittest.TestCase):
         assert s.arxiv_id is None
         assert s.handle == "user.bsky.social"
         assert s.post_text == "Great paper!"
+        assert s.engagement is not None
+        assert s.engagement.total == 16
+        assert s.engagement_score > 0.0
+        assert s.commentary == "Great paper!"
+        assert s.has_commentary is False
 
     def test_arxiv_sighting(self) -> None:
         s = _make_sighting(
@@ -161,6 +277,10 @@ class TestMakeSighting(unittest.TestCase):
         assert s is not None
         assert s.doi is None
         assert s.arxiv_id == "2401.12345"
+        assert s.engagement is None
+        assert s.engagement_score == 0.0
+        assert s.commentary is None
+        assert s.has_commentary is False
 
     def test_pmid_discarded(self) -> None:
         s = _make_sighting(
@@ -187,9 +307,10 @@ class TestFetchBlueskyIntegration(unittest.TestCase):
         print(f"\nFound {len(results)} sightings:")
         for s in results:
             paper_id = s.doi or s.arxiv_id
-            print(f"  {paper_id} — {s.handle} on {s.posted_at}")
+            eng = s.engagement
+            eng_str = f"[{eng.like_count}L {eng.repost_count}R {eng.reply_count}C {eng.quote_count}Q]" if eng else "[no engagement]"
+            print(f"  {paper_id} — {s.handle} on {s.posted_at} {eng_str}")
 
-        # Verify return type
         assert isinstance(results, list)
         for s in results:
             assert isinstance(s, BlueskySighting)
@@ -197,6 +318,8 @@ class TestFetchBlueskyIntegration(unittest.TestCase):
             assert isinstance(s.post_url, str)
             assert isinstance(s.posted_at, date)
             assert s.doi is not None or s.arxiv_id is not None
+            assert isinstance(s.engagement, BlueskyEngagement)
+            assert isinstance(s.has_commentary, bool)
 
     def test_empty_handles(self) -> None:
         today = date.today()
@@ -217,7 +340,6 @@ class TestFetchBlueskyIntegration(unittest.TestCase):
         assert isinstance(results, list)
 
     def test_date_filtering(self) -> None:
-        # Very old date range — should return nothing from a recent feed
         results = asyncio.run(
             fetch_bluesky(
                 ["atproto.bsky.social"],
