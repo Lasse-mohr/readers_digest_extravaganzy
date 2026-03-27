@@ -92,6 +92,32 @@ def reconstruct_abstract(inverted_index: Optional[dict]) -> Optional[str]:
     return " ".join(word for _, word in word_positions)
 
 
+# ── DOI lookup ────────────────────────────────────────────────────────────────
+
+
+def fetch_abstract_by_doi(doi: str) -> Optional[str]:
+    """
+    Fetch the abstract for a single paper by DOI.
+
+    Returns None if the work is not found in OpenAlex or has no abstract.
+    The DOI can be bare (10.1038/...) or include the https://doi.org/ prefix.
+    """
+    if not doi.startswith("https://doi.org/"):
+        doi = f"https://doi.org/{doi}"
+    try:
+        work = Works()[doi]
+    except Exception:
+        logger.warning("OpenAlex lookup failed for DOI %s", doi, exc_info=True)
+        return None
+    return work.get("abstract") or reconstruct_abstract(work.get("abstract_inverted_index"))
+
+
+async def fetch_abstract_by_doi_async(doi: str) -> Optional[str]:
+    """Async wrapper for fetch_abstract_by_doi."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(fetch_abstract_by_doi, doi))
+
+
 # ── Data normalisation ─────────────────────────────────────────────────────────
 
 def openalex_work_to_paper(work: dict) -> Paper:
