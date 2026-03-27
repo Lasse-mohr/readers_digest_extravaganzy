@@ -4,11 +4,12 @@ import asyncio
 import unittest
 from datetime import date, timedelta
 
-from shared.types import BlueskyEngagement, BlueskySighting
+from shared.types import BlueskyEngagement, BlueskySighting, Paper
 from services.bluesky import (
     extract_paper_id,
     extract_urls_from_post,
     fetch_bluesky,
+    promote_trending_sightings,
     _parse_post_date,
     _get_post_url,
     _get_engagement,
@@ -289,6 +290,63 @@ class TestMakeSighting(unittest.TestCase):
             date(2025, 3, 20), None,
         )
         assert s is None
+
+
+class TestPromoteTrendingSightings(unittest.TestCase):
+    """Unit tests for promote_trending_sightings."""
+
+    def _sighting(self, doi=None, arxiv_id=None, handle="a.bsky.social") -> BlueskySighting:
+        return BlueskySighting(
+            doi=doi, arxiv_id=arxiv_id, handle=handle,
+            post_url="https://bsky.app/profile/x/post/1",
+            posted_at=date(2025, 3, 20),
+        )
+
+    def test_trending_doi_promoted(self) -> None:
+        sightings = [
+            self._sighting(doi="10.1038/new", handle="alice.bsky.social"),
+            self._sighting(doi="10.1038/new", handle="bob.bsky.social"),
+        ]
+        result = asyncio.run(promote_trending_sightings(sightings, []))
+        assert len(result) == 1
+        assert isinstance(result[0], Paper)
+        assert result[0].doi == "10.1038/new"
+        assert result[0].source == "bluesky"
+
+    def test_trending_arxiv_promoted(self) -> None:
+        sightings = [
+            self._sighting(arxiv_id="2401.99999", handle="alice.bsky.social"),
+            self._sighting(arxiv_id="2401.99999", handle="bob.bsky.social"),
+        ]
+        result = asyncio.run(promote_trending_sightings(sightings, []))
+        assert len(result) == 1
+        assert result[0].arxiv_id == "2401.99999"
+
+    def test_single_handle_not_promoted(self) -> None:
+        sightings = [
+            self._sighting(doi="10.1038/solo", handle="alice.bsky.social"),
+            self._sighting(doi="10.1038/solo", handle="alice.bsky.social"),
+        ]
+        result = asyncio.run(promote_trending_sightings(sightings, []))
+        assert result == []
+
+    def test_already_in_corpus_not_promoted(self) -> None:
+        sightings = [
+            self._sighting(doi="10.1038/exists", handle="alice.bsky.social"),
+            self._sighting(doi="10.1038/exists", handle="bob.bsky.social"),
+        ]
+        existing = [Paper(
+            doi="10.1038/exists", arxiv_id=None, openalex_id=None,
+            title="Existing", abstract=None, authors=[],
+            journal=None, journal_issn=None, published_date=date(2025, 3, 20),
+            source="arxiv", url=None,
+        )]
+        result = asyncio.run(promote_trending_sightings(sightings, existing))
+        assert result == []
+
+    def test_empty_sightings(self) -> None:
+        result = asyncio.run(promote_trending_sightings([], []))
+        assert result == []
 
 
 class TestFetchBlueskyIntegration(unittest.TestCase):

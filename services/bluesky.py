@@ -10,7 +10,7 @@ from urllib.parse import unquote
 
 import httpx
 
-from shared.types import BlueskyEngagement, BlueskySighting
+from shared.types import Author, BlueskyEngagement, BlueskySighting, Paper
 
 logger = logging.getLogger("bluesky")
 
@@ -296,6 +296,88 @@ async def fetch_bluesky(
         "Found %d sightings across %d handles", len(sightings), len(handles)
     )
     return sightings
+
+
+async def promote_trending_sightings(
+    sightings: list[BlueskySighting],
+    existing_papers: list[Paper],
+    trending_threshold: int = 2,
+) -> list[Paper]:
+    """Create Paper stubs for trending Bluesky sightings not in the existing corpus.
+
+    A sighting is trending if the same paper (by DOI or arXiv ID) is shared by
+    >= trending_threshold distinct handles. This ensures papers going viral on
+    academic Bluesky make it into the digest even if they weren't fetched from
+    arXiv or OpenAlex.
+
+    Tries to enrich DOI-based papers with abstracts via OpenAlex.
+    """
+    # Build index of existing paper IDs
+    existing_dois = {p.doi for p in existing_papers if p.doi}
+    existing_arxiv = {p.arxiv_id for p in existing_papers if p.arxiv_id}
+
+    # Group sightings by paper ID
+    from collections import defaultdict
+    by_paper: dict[str, list[BlueskySighting]] = defaultdict(list)
+    for s in sightings:
+        key = s.doi or s.arxiv_id
+        if key:
+            by_paper[key].append(s)
+
+    promoted: list[Paper] = []
+    for paper_key, paper_sightings in by_paper.items():
+        # Skip if already in corpus
+        if paper_key in existing_dois or paper_key in existing_arxiv:
+            continue
+
+        # Check trending: >= threshold distinct handles
+        distinct_handles = {s.handle for s in paper_sightings}
+        if len(distinct_handles) < trending_threshold:
+            continue
+
+        # Build a stub Paper
+        sample = paper_sightings[0]
+        doi = sample.doi
+        arxiv_id = sample.arxiv_id
+
+        if doi:
+            url = f"https://doi.org/{doi}"
+        elif arxiv_id:
+            url = f"https://arxiv.org/abs/{arxiv_id}"
+        else:
+            url = None
+
+        title = f"[Trending on Bluesky] {doi or arxiv_id}"
+        abstract = None
+
+        # Try to enrich via OpenAlex for DOI-based papers
+        if doi:
+            try:
+                from services.openalex_client import fetch_abstract_by_doi
+                abstract = fetch_abstract_by_doi(doi)
+                if abstract:
+                    logger.info("Enriched %s with abstract from OpenAlex", doi)
+            except Exception as e:
+                logger.debug("Could not enrich %s: %s", doi, e)
+
+        paper = Paper(
+            doi=doi,
+            arxiv_id=arxiv_id,
+            openalex_id=None,
+            title=title,
+            abstract=abstract,
+            authors=[],
+            journal=None,
+            journal_issn=None,
+            published_date=sample.posted_at,
+            source="bluesky",
+            url=url,
+        )
+        promoted.append(paper)
+        handles_str = ", ".join(distinct_handles)
+        logger.info("Promoted trending paper %s (shared by %s)", paper_key, handles_str)
+
+    return promoted
 
 
 if __name__ == "__main__":

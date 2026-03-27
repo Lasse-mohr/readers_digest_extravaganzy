@@ -61,6 +61,14 @@ async def main():
     merged = merge_and_dedup(papers_openalex=[], papers_arxiv=arxiv_papers)
     print(f"  {len(merged)} papers after dedup")
 
+    # ── 2b. Promote trending Bluesky sightings to papers ─────────
+    from services.bluesky import promote_trending_sightings
+
+    promoted = await promote_trending_sightings(bluesky_sightings, merged)
+    if promoted:
+        merged.extend(promoted)
+        print(f"  {len(promoted)} trending Bluesky papers promoted (not in arXiv corpus)")
+
     print("Loading SPECTER2 & scoring...")
     profile_emb = encode_profile(cfg["research_profile"])
 
