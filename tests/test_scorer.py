@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from shared.types import Author, BlueskySighting, Paper
+from shared.types import Author, BlueskyEngagement, BlueskySighting, Paper
 from services.scorer import (
     ScorerConfig,
     ScoringWeights,
@@ -45,13 +45,17 @@ def _paper(
     )
 
 
-def _sighting(doi=None, arxiv_id=None, handle="user.bsky.social") -> BlueskySighting:
+def _sighting(doi=None, arxiv_id=None, handle="user.bsky.social", total_engagement=0) -> BlueskySighting:
+    engagement = BlueskyEngagement(
+        like_count=total_engagement, reply_count=0, repost_count=0, quote_count=0,
+    ) if total_engagement > 0 else None
     return BlueskySighting(
         doi=doi,
         arxiv_id=arxiv_id,
         handle=handle,
         post_url="https://bsky.app/post/123",
         posted_at=date(2026, 3, 21),
+        engagement=engagement,
     )
 
 
@@ -164,13 +168,33 @@ class TestScoring:
         assert sp.priority_author_match is True
         assert sp.final_score == pytest.approx(0.60 + 0.20, abs=0.01)
 
-    def test_bluesky_bonus_and_section(self, _mock_profile, _mock_paper):
+    def test_bluesky_bonus_no_engagement(self, _mock_profile, _mock_paper):
+        """Sighting with no engagement gets 50% of bluesky bonus."""
         papers = [_paper(doi="10.1234/a")]
         sightings = [_sighting(doi="10.1234/a")]
         result = score_papers(papers, sightings, _fake_embedding(), _default_config())
         sp = result.sections["following"][0]
-        assert sp.final_score == pytest.approx(0.60 + 0.10, abs=0.01)
+        # 0.10 * (0.5 + 0.5 * 0.0) = 0.05
+        assert sp.final_score == pytest.approx(0.60 + 0.05, abs=0.01)
         assert len(sp.bluesky_sightings) == 1
+
+    def test_bluesky_bonus_high_engagement(self, _mock_profile, _mock_paper):
+        """Sighting with 100+ engagement gets full bluesky bonus."""
+        papers = [_paper(doi="10.1234/a")]
+        sightings = [_sighting(doi="10.1234/a", total_engagement=100)]
+        result = score_papers(papers, sightings, _fake_embedding(), _default_config())
+        sp = result.sections["following"][0]
+        # 0.10 * (0.5 + 0.5 * 1.0) = 0.10
+        assert sp.final_score == pytest.approx(0.60 + 0.10, abs=0.01)
+
+    def test_bluesky_bonus_mid_engagement(self, _mock_profile, _mock_paper):
+        """Sighting with ~10 engagement gets roughly 75% of bluesky bonus."""
+        papers = [_paper(doi="10.1234/a")]
+        sightings = [_sighting(doi="10.1234/a", total_engagement=10)]
+        result = score_papers(papers, sightings, _fake_embedding(), _default_config())
+        sp = result.sections["following"][0]
+        # engagement_score(10) ≈ 0.52, bonus = 0.10 * (0.5 + 0.5 * 0.52) ≈ 0.076
+        assert 0.65 < sp.final_score < 0.70
 
     def test_trending_flag(self, _mock_profile, _mock_paper):
         papers = [_paper(doi="10.1234/a")]
