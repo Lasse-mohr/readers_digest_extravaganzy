@@ -301,14 +301,13 @@ async def fetch_bluesky(
 async def promote_trending_sightings(
     sightings: list[BlueskySighting],
     existing_papers: list[Paper],
-    trending_threshold: int = 2,
+    trending_threshold: int = 1,
 ) -> list[Paper]:
-    """Create Paper stubs for trending Bluesky sightings not in the existing corpus.
+    """Create Paper stubs for Bluesky sightings not in the existing corpus.
 
-    A sighting is trending if the same paper (by DOI or arXiv ID) is shared by
-    >= trending_threshold distinct handles. This ensures papers going viral on
-    academic Bluesky make it into the digest even if they weren't fetched from
-    arXiv or OpenAlex.
+    Any paper shared by >= trending_threshold distinct handles that isn't
+    already in the arXiv/OpenAlex corpus gets promoted into the digest.
+    Default threshold is 1 (any mention is enough).
 
     Tries to enrich DOI-based papers with abstracts via OpenAlex.
     """

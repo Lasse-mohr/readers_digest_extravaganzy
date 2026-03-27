@@ -322,13 +322,13 @@ class TestPromoteTrendingSightings(unittest.TestCase):
         assert len(result) == 1
         assert result[0].arxiv_id == "2401.99999"
 
-    def test_single_handle_not_promoted(self) -> None:
+    def test_single_handle_promoted(self) -> None:
         sightings = [
-            self._sighting(doi="10.1038/solo", handle="alice.bsky.social"),
             self._sighting(doi="10.1038/solo", handle="alice.bsky.social"),
         ]
         result = asyncio.run(promote_trending_sightings(sightings, []))
-        assert result == []
+        assert len(result) == 1
+        assert result[0].doi == "10.1038/solo"
 
     def test_already_in_corpus_not_promoted(self) -> None:
         sightings = [
