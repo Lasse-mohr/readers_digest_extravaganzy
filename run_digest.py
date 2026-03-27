@@ -106,6 +106,38 @@ async def main():
         merged.extend(promoted)
         print(f"  {len(promoted)} trending Bluesky papers promoted (not in arXiv corpus)")
 
+    # ── 3a. Coauthor expansion ─────────────────────────────────────
+    from services.coauthors import get_coauthor_ids, is_cache_fresh, refresh_coauthors
+    from db.database import create_db_and_tables, get_session
+
+    create_db_and_tables()
+
+    expand_authors = [
+        a for a in cfg["priority_authors"]
+        if a.get("openalex_id") and a.get("expand_coauthors")
+    ]
+
+    coauthor_ids: set[str] = set()
+    if expand_authors:
+        print(f"Expanding coauthors for {len(expand_authors)} priority author(s)...")
+        session = get_session()
+        for author in expand_authors:
+            oid = author["openalex_id"]
+            if not is_cache_fresh(oid, session):
+                print(f"  Refreshing coauthor cache for {author['name']}...")
+                await refresh_coauthors(oid, session)
+            ids = get_coauthor_ids(oid, session)
+            print(f"  {author['name']}: {len(ids)} coauthors")
+            coauthor_ids.update(ids)
+        session.close()
+        print(f"  {len(coauthor_ids)} unique coauthor IDs added to priority set")
+
+    priority_author_ids = {
+        a["openalex_id"]
+        for a in cfg["priority_authors"]
+        if a.get("openalex_id")
+    } | coauthor_ids
+
     print("Loading SPECTER2 & scoring...")
     profile_emb = encode_profile(cfg["research_profile"])
 
@@ -114,11 +146,7 @@ async def main():
             JournalConfig(name=j["name"], issn=j["issn"], tier=j["tier"])
             for j in cfg["journals"]
         ],
-        priority_author_ids={
-            a["openalex_id"]
-            for a in cfg["priority_authors"]
-            if a.get("openalex_id")
-        },
+        priority_author_ids=priority_author_ids,
         scoring=ScoringWeights(
             semantic_similarity=cfg["scoring"]["semantic_similarity"],
             journal_tier1_bonus=cfg["scoring"]["journal_tier_bonus"]["tier1"],
