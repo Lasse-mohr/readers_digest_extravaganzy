@@ -8,6 +8,7 @@ Do NOT redefine these types per-module — import from here.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
@@ -59,6 +60,19 @@ class Paper:
 
 
 @dataclass
+class BlueskyEngagement:
+    """Engagement metrics for a Bluesky post."""
+    like_count: int
+    reply_count: int
+    repost_count: int
+    quote_count: int
+
+    @property
+    def total(self) -> int:
+        return self.like_count + self.reply_count + self.repost_count + self.quote_count
+
+
+@dataclass
 class BlueskySighting:
     """
     A record of one paper being linked by one Bluesky account.
@@ -70,6 +84,19 @@ class BlueskySighting:
     post_url: str
     posted_at: date
     post_text: Optional[str] = None
+    engagement: Optional[BlueskyEngagement] = None
+    commentary: Optional[str] = None
+    has_commentary: bool = False
+
+    @property
+    def engagement_score(self) -> float:
+        """Normalised 0-1 engagement signal on a log scale.
+
+        Roughly: 0 engagement -> 0.0, 10 -> 0.5, 100 -> 1.0, 1000+ -> capped at 1.0.
+        """
+        if self.engagement is None:
+            return 0.0
+        return min(1.0, math.log1p(self.engagement.total) / math.log1p(100))
 
 
 # ── Synthesis model types ──────────────────────────────────────────────────

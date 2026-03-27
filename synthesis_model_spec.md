@@ -146,18 +146,43 @@ other two fetchers.
 
 ```python
 @dataclass
+class BlueskyEngagement:
+    """Engagement metrics for a Bluesky post."""
+    like_count: int
+    reply_count: int
+    repost_count: int
+    quote_count: int
+
+    @property
+    def total(self) -> int:
+        return self.like_count + self.reply_count + self.repost_count + self.quote_count
+
+
+@dataclass
 class BlueskySighting:
     """
     A record of one paper being linked by one Bluesky account.
     One paper linked by three accounts produces three BlueskySightings.
     """
-    doi: Optional[str]         # Resolved DOI, normalised. Preferred match key.
-    arxiv_id: Optional[str]    # Resolved arXiv ID. Used if doi is None.
-    handle: str                # The Bluesky handle that posted the link.
-    post_url: str              # Full URL of the Bluesky post itself.
-    posted_at: date            # Date of the post.
-    post_text: Optional[str]   # Full text of the post. May be useful for
-                               # extracting commentary to include in digest.
+    doi: Optional[str]                        # Resolved DOI, normalised. Preferred match key.
+    arxiv_id: Optional[str]                   # Resolved arXiv ID. Used if doi is None.
+    handle: str                               # The Bluesky handle that posted the link.
+    post_url: str                             # Full URL of the Bluesky post itself.
+    posted_at: date                           # Date of the post.
+    post_text: Optional[str] = None           # Full text of the post.
+    engagement: Optional[BlueskyEngagement] = None  # Post engagement metrics.
+    commentary: Optional[str] = None          # Post text with URLs stripped.
+    has_commentary: bool = False              # True if commentary > 80 chars.
+
+    @property
+    def engagement_score(self) -> float:
+        """Normalised 0-1 engagement signal on a log scale.
+        Roughly: 0 -> 0.0, 10 -> 0.5, 100 -> 1.0, 1000+ -> capped at 1.0.
+        On academic Bluesky, 100+ engagements is already very high signal.
+        """
+        if self.engagement is None:
+            return 0.0
+        return min(1.0, math.log1p(self.engagement.total) / math.log1p(100))
 
 
 def fetch_bluesky(
@@ -184,6 +209,12 @@ def fetch_bluesky(
   - `biorxiv.org/content/{doi}` → doi
   - If resolution fails or times out, discard the sighting silently.
 - `post_text` should be the raw post text with no truncation.
+- `engagement` captures like, reply, repost, and quote counts from each post.
+- `commentary` is the post text with URLs stripped; `has_commentary` is True
+  when the cleaned text is >80 characters (useful for deciding whether to
+  include a quoted excerpt in the digest).
+- `engagement_score` is a computed property (log-scaled, 0-1) that normalises
+  raw engagement into a signal the scorer can use directly.
 - Do not filter by topic or try to determine whether the link is paper-related
   before resolution — the model handles that.
 
@@ -297,6 +328,18 @@ author_bonus = priority_author_bonus
 
 bluesky_bonus = bluesky_mention_bonus if len(paper.bluesky_sightings) > 0
                else 0.0
+
+# Optional: scale bluesky_bonus by engagement. Each sighting carries an
+# engagement_score (0-1, log-scaled). Using the max across sightings as a
+# multiplier means a high-engagement share gives a bigger boost than a
+# zero-engagement link drop, while still granting the base bonus for any
+# mention at all:
+#
+#   max_eng = max(s.engagement_score for s in paper.bluesky_sightings)
+#   bluesky_bonus = bluesky_mention_bonus * (0.5 + 0.5 * max_eng)
+#
+# This keeps the floor at 50% of the bonus (any mention is still signal)
+# and scales up to 100% for posts with ~100+ engagements.
 
 final_score = (base_score * semantic_similarity_weight)
             + journal_bonus + author_bonus + bluesky_bonus

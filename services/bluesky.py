@@ -10,7 +10,7 @@ from urllib.parse import unquote
 
 import httpx
 
-from shared.types import BlueskySighting
+from shared.types import BlueskyEngagement, BlueskySighting
 
 logger = logging.getLogger("bluesky")
 
@@ -158,6 +158,31 @@ def _get_post_text(post: dict) -> str | None:
     return text if text else None
 
 
+def _get_engagement(post: dict) -> BlueskyEngagement:
+    """Extract engagement metrics from a Bluesky post."""
+    post_data = post.get("post", {})
+    return BlueskyEngagement(
+        like_count=post_data.get("likeCount", 0),
+        reply_count=post_data.get("replyCount", 0),
+        repost_count=post_data.get("repostCount", 0),
+        quote_count=post_data.get("quoteCount", 0),
+    )
+
+
+def _make_commentary(post_text: str | None) -> tuple[str | None, bool]:
+    """Strip URLs from post text and determine if it contains commentary.
+
+    Returns (commentary, has_commentary). has_commentary is True when the
+    cleaned text is longer than 80 characters.
+    """
+    if not post_text:
+        return None, False
+    cleaned = URL_REGEX.sub("", post_text).strip()
+    if not cleaned:
+        return None, False
+    return cleaned, len(cleaned) > 80
+
+
 async def _fetch_author_feed(
     client: httpx.AsyncClient, handle: str
 ) -> list[dict]:
@@ -182,18 +207,20 @@ def _make_sighting(
     post_url: str,
     posted_at: date,
     post_text: str | None,
+    engagement: BlueskyEngagement | None = None,
+    commentary: str | None = None,
+    has_commentary: bool = False,
 ) -> BlueskySighting | None:
     """Create a BlueskySighting from extracted paper ID fields."""
+    kwargs = dict(
+        handle=handle, post_url=post_url, posted_at=posted_at,
+        post_text=post_text, engagement=engagement,
+        commentary=commentary, has_commentary=has_commentary,
+    )
     if id_type == "doi":
-        return BlueskySighting(
-            doi=id_value, arxiv_id=None, handle=handle,
-            post_url=post_url, posted_at=posted_at, post_text=post_text,
-        )
+        return BlueskySighting(doi=id_value, arxiv_id=None, **kwargs)
     elif id_type == "arxiv":
-        return BlueskySighting(
-            doi=None, arxiv_id=id_value, handle=handle,
-            post_url=post_url, posted_at=posted_at, post_text=post_text,
-        )
+        return BlueskySighting(doi=None, arxiv_id=id_value, **kwargs)
     # Discard pmid and other types we can't match on
     return None
 
@@ -235,6 +262,8 @@ async def fetch_bluesky(
 
                 post_url = _get_post_url(post)
                 post_text = _get_post_text(post)
+                engagement = _get_engagement(post)
+                commentary, has_commentary = _make_commentary(post_text)
                 urls = extract_urls_from_post(post)
 
                 for url in urls:
@@ -244,6 +273,7 @@ async def fetch_bluesky(
                         s = _make_sighting(
                             paper[0], paper[1], handle,
                             post_url, posted_at, post_text,
+                            engagement, commentary, has_commentary,
                         )
                         if s:
                             sightings.append(s)
@@ -257,6 +287,7 @@ async def fetch_bluesky(
                             s = _make_sighting(
                                 paper[0], paper[1], handle,
                                 post_url, posted_at, post_text,
+                                engagement, commentary, has_commentary,
                             )
                             if s:
                                 sightings.append(s)
@@ -284,4 +315,6 @@ if __name__ == "__main__":
     print(f"\nFound {len(results)} sightings:")
     for s in results:
         paper_id = s.doi or s.arxiv_id
-        print(f"  {paper_id} — {s.handle} on {s.posted_at}")
+        eng = s.engagement
+        eng_str = f"[{eng.like_count}L {eng.repost_count}R {eng.reply_count}C {eng.quote_count}Q = {eng.total}]" if eng else "[no engagement]"
+        print(f"  {paper_id} — {s.handle} on {s.posted_at} {eng_str}")
