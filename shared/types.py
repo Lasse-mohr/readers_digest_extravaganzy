@@ -167,3 +167,4 @@ class DigestResult:
     markdown_path: str
     markdown: str
     scored_papers: list[ScoredPaperRecord]
+    linkedin_post: Optional[str] = None

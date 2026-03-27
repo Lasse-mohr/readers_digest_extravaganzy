@@ -117,6 +117,27 @@ async def main():
     print(f"  {result.papers_included} papers included")
     print(f"  {result.papers_dropped_no_abstract} had no abstract")
 
+    # ── 5. Generate LinkedIn post ──────────────────────────────────
+    if cfg.get("linkedin", {}).get("enabled", False):
+        from services.linkedin import build_linkedin_post
+
+        print(f"\nGenerating LinkedIn post with Ollama ({cfg['digest']['ollama_model']})...")
+        linkedin_text = await build_linkedin_post(
+            digest_result=result,
+            research_profile=cfg["research_profile"],
+            ollama_model=cfg["digest"]["ollama_model"],
+            ollama_host=cfg["digest"]["ollama_host"],
+            linkedin_config=cfg["linkedin"],
+        )
+        if linkedin_text:
+            result.linkedin_post = linkedin_text
+            print(f"LinkedIn post saved to: digests/linkedin_{date_to}.txt")
+            print("\n--- LinkedIn Post Preview ---")
+            print(linkedin_text)
+            print("--- End Preview ---")
+        else:
+            print("\nNo papers with summaries — skipped LinkedIn post.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
