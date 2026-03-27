@@ -311,4 +311,21 @@ async def run_fetch(
         "Fetch complete: %d unique papers (from %d total)",
         len(deduped), len(all_papers),
     )
+
+    # Enrich missing abstracts via OpenAlex DOI lookup
+    from services.openalex_client import fetch_abstract_by_doi_async
+
+    missing = [p for p in deduped if p.abstract is None and p.doi]
+    if missing:
+        logger.info("Fetching missing abstracts for %d papers via OpenAlex...", len(missing))
+        abstracts = await asyncio.gather(
+            *[fetch_abstract_by_doi_async(p.doi) for p in missing]
+        )
+        filled = 0
+        for paper, abstract in zip(missing, abstracts):
+            if abstract:
+                paper.abstract = abstract
+                filled += 1
+        logger.info("Filled %d/%d missing abstracts", filled, len(missing))
+
     return deduped
