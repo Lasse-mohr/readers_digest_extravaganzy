@@ -101,6 +101,18 @@ pytest tests/test_scorer.py
 python -m tests.smoke_test
 ```
 
+### OpenAlex smoke tests
+
+These require a valid `OPENALEX_API_KEY` in `.env` and a network connection.
+
+```bash
+# Search for an author and list their recent works
+python tests/test_openalex.py "Karl Deisseroth"
+
+# Fetch the abstract for a paper by DOI
+python tests/test_abstract_by_doi.py 10.1038/s41586-024-07487-w
+```
+
 ## Project structure
 
 ```
@@ -115,7 +127,10 @@ shared/
     types.py            Shared dataclasses (Paper, BlueskySighting, DigestResult, etc.)
 db/
     database.py         SQLModel schema
-tests/                  Unit and integration tests
+tests/
+    test_scorer.py          Unit tests for scoring (mocked, no network)
+    test_openalex.py        Smoke test: author search and recent works
+    test_abstract_by_doi.py Smoke test: fetch abstract by DOI
 digests/                Generated markdown digests (gitignored)
 config.yaml             Your personal config (gitignored)
 run_digest.py           CLI entry point for the full pipeline
