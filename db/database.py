@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from typing import Optional
+
 from sqlmodel import Field, SQLModel, create_engine, Session, JSON, Column
 from sqlalchemy import JSON as SAJSON
 

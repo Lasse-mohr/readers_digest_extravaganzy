@@ -1,28 +1,21 @@
 """
-arXiv paper fetcher.
-
-Contract (from synthesis_model_spec.md):
-
-    def fetch_arxiv(
-        categories: list[str],
-        date_from: date,
-        date_to: date,
-    ) -> list[Paper]: ...
-
-Returns raw, un-deduplicated results. Deduplication is the synthesis model's
-responsibility. The fetcher's job is to retrieve every available paper and
-return it in the shared Paper format.
+Paper fetcher: arXiv (feedparser) + OpenAlex, with deduplication and orchestration.
 """
 
 import asyncio
+import logging
 import re
 from datetime import date, datetime
 from typing import Optional
 
 import feedparser
 import httpx
+from Levenshtein import distance as levenshtein_distance
 
-from shared.types import Author, Paper
+from db.database import Paper
+from services.openalex_client import fetch_works_by_journals_async, openalex_work_to_paper
+
+logger = logging.getLogger(__name__)
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 MAX_RESULTS_PER_REQUEST = 200
@@ -30,8 +23,10 @@ REQUEST_DELAY = 1.0  # seconds between paginated requests
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 3.0  # seconds; doubles on each retry
 
+_TITLE_DISTANCE_THRESHOLD = 5
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+
+# ── arXiv helpers ─────────────────────────────────────────────────────────────
 
 
 def _extract_arxiv_id(entry_id: str) -> str:
@@ -53,11 +48,8 @@ def _normalize_doi(raw: Optional[str]) -> Optional[str]:
     return doi or None
 
 
-def _parse_authors(entry) -> list[Author]:
-    return [
-        Author(name=a.get("name", "").strip())
-        for a in getattr(entry, "authors", [])
-    ]
+def _parse_authors(entry) -> list:
+    return [{"name": a.get("name", "").strip()} for a in getattr(entry, "authors", [])]
 
 
 def _build_query(categories: list[str], date_from: date, date_to: date) -> str:
@@ -69,7 +61,7 @@ def _build_query(categories: list[str], date_from: date, date_to: date) -> str:
     return f"({cat_query}) AND {date_filter}"
 
 
-# ── Core fetch ─────────────────────────────────────────────────────────────
+# ── arXiv page fetch ──────────────────────────────────────────────────────────
 
 
 async def _fetch_page(
@@ -92,12 +84,18 @@ async def _fetch_page(
         except httpx.TimeoutException as exc:
             last_exc = exc
             backoff = INITIAL_BACKOFF * (2 ** attempt)
-            print(f"  arXiv timeout — retrying in {backoff:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+            logger.warning(
+                "arXiv timeout — retrying in %.0fs (attempt %d/%d)",
+                backoff, attempt + 1, MAX_RETRIES,
+            )
             await asyncio.sleep(backoff)
             continue
         if response.status_code in (429, 500, 502, 503):
             backoff = INITIAL_BACKOFF * (2 ** attempt)
-            print(f"  arXiv {response.status_code} — retrying in {backoff:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+            logger.warning(
+                "arXiv %d — retrying in %.0fs (attempt %d/%d)",
+                response.status_code, backoff, attempt + 1, MAX_RETRIES,
+            )
             await asyncio.sleep(backoff)
             continue
         response.raise_for_status()
@@ -107,18 +105,15 @@ async def _fetch_page(
     response.raise_for_status()  # raise after final retry
 
 
-async def fetch_arxiv(
-    categories: list[str],
-    date_from: date,
-    date_to: date,
-) -> list[Paper]:
-    """
-    Fetch papers from arXiv for the given categories and date window.
+# ── Source fetchers ────────────────────────────────────────────────────────────
 
-    Returns raw results — no deduplication. The synthesis model deduplicates
-    across fetcher outputs.
-    """
-    query = _build_query(categories, date_from, date_to)
+
+async def fetch_arxiv_papers(
+    categories: list[str],
+    from_date: date,
+    to_date: date,
+) -> list[Paper]:
+    query = _build_query(categories, from_date, to_date)
     papers: list[Paper] = []
 
     async with httpx.AsyncClient() as client:
@@ -127,8 +122,10 @@ async def fetch_arxiv(
             try:
                 feed = await _fetch_page(client, query, start, MAX_RESULTS_PER_REQUEST)
             except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
-                print(f"  ⚠ arXiv fetch failed after retries: {exc}")
-                print(f"  Returning {len(papers)} papers collected so far.")
+                logger.warning(
+                    "arXiv fetch failed after retries: %s. Returning %d papers so far.",
+                    exc, len(papers),
+                )
                 break
 
             entries = feed.get("entries", [])
@@ -138,42 +135,30 @@ async def fetch_arxiv(
             for entry in entries:
                 arxiv_id = _extract_arxiv_id(entry.get("id", ""))
                 title = re.sub(r"\s+", " ", entry.get("title", "")).strip()
-
                 abstract = entry.get("summary", "").strip() or None
-
-                # entry.arxiv_doi is set when the paper has a published DOI
                 doi = _normalize_doi(entry.get("arxiv_doi") or entry.get("doi"))
-
-                # journal_ref is author-supplied; use verbatim per spec
-                journal = entry.get("arxiv_journal_ref") or None
-                if journal:
-                    journal = journal.strip()
-
+                journal = (entry.get("arxiv_journal_ref") or "").strip() or None
                 authors = _parse_authors(entry)
 
                 published_str = entry.get("published", "")
                 try:
                     published_date = datetime.strptime(published_str[:10], "%Y-%m-%d").date()
                 except ValueError:
-                    published_date = date_to
+                    published_date = to_date
 
-                arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
-
-                papers.append(
-                    Paper(
-                        doi=doi,
-                        arxiv_id=arxiv_id,
-                        openalex_id=None,
-                        title=title,
-                        abstract=abstract,
-                        authors=authors,
-                        journal=journal,
-                        journal_issn=None,  # arXiv papers don't carry ISSNs
-                        published_date=published_date,
-                        source="arxiv",
-                        url=arxiv_url,
-                    )
-                )
+                paper_id = doi if doi else f"arxiv:{arxiv_id}"
+                papers.append(Paper(
+                    id=paper_id,
+                    doi=doi,
+                    arxiv_id=arxiv_id,
+                    openalex_id=None,
+                    title=title,
+                    abstract=abstract,
+                    authors=authors,
+                    journal=journal,
+                    published_date=published_date,
+                    source="arxiv",
+                ))
 
             total = int(feed.feed.get("opensearch_totalresults", 0))
             start += len(entries)
@@ -182,43 +167,113 @@ async def fetch_arxiv(
 
             await asyncio.sleep(REQUEST_DELAY)
 
+    logger.info("Fetched %d papers from arXiv", len(papers))
     return papers
 
 
-# ── Entry point for manual testing ────────────────────────────────────────
+async def fetch_openalex_papers(
+    issns: list[str],
+    from_date: date,
+    to_date: date,
+) -> list[Paper]:
+    logger.info(
+        "Fetching OpenAlex papers for %d ISSNs (%s to %s)",
+        len(issns), from_date, to_date,
+    )
+    works = await fetch_works_by_journals_async(issns, from_date, to_date)
+    papers: list[Paper] = []
+    for work in works:
+        try:
+            paper = openalex_work_to_paper(work)
+            if paper.id:
+                papers.append(paper)
+        except Exception:
+            logger.warning("Failed to convert work %s", work.get("id"), exc_info=True)
+    logger.info("Received %d papers from OpenAlex", len(papers))
+    return papers
 
 
-if __name__ == "__main__":
-    from datetime import timedelta
-    from pathlib import Path
+# ── Deduplication ─────────────────────────────────────────────────────────────
 
-    import yaml
 
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+def _normalise_title(title: str) -> str:
+    return title.lower().strip()
 
-    categories = config.get("arxiv_categories", ["q-bio.GN"])
-    lookback = config.get("digest", {}).get("lookback_days", 7)
-    date_to = date.today()
-    date_from = date_to - timedelta(days=lookback)
 
-    print(f"Fetching arXiv papers for: {categories}")
-    print(f"Window: {date_from} → {date_to}\n")
+def _merge(existing: Paper, incoming: Paper) -> None:
+    """Fill missing fields on existing from incoming, preferring non-None values."""
+    if existing.abstract is None and incoming.abstract is not None:
+        existing.abstract = incoming.abstract
+    if existing.doi is None and incoming.doi is not None:
+        existing.doi = incoming.doi
+        existing.id = incoming.doi  # DOI is preferred PK
+    if existing.arxiv_id is None and incoming.arxiv_id is not None:
+        existing.arxiv_id = incoming.arxiv_id
+    if existing.openalex_id is None and incoming.openalex_id is not None:
+        existing.openalex_id = incoming.openalex_id
+    if existing.journal is None and incoming.journal is not None:
+        existing.journal = incoming.journal
 
-    papers = asyncio.run(fetch_arxiv(categories, date_from, date_to))
-    print(f"Fetched {len(papers)} papers.\n")
 
-    with_doi = sum(1 for p in papers if p.doi)
-    with_abstract = sum(1 for p in papers if p.abstract)
-    print(f"  with DOI:      {with_doi}/{len(papers)}")
-    print(f"  with abstract: {with_abstract}/{len(papers)}\n")
+def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
+    """
+    Deduplicate by DOI → arXiv ID → fuzzy title match (Levenshtein ≤ 5).
+    On conflict, merge records preserving non-None fields.
+    """
+    seen_dois: dict[str, Paper] = {}
+    seen_arxiv_ids: dict[str, Paper] = {}
+    result: list[Paper] = []
 
-    for p in papers[:5]:
-        print(f"  [{p.arxiv_id}] {p.title[:80]}")
-        print(f"    doi:      {p.doi}")
-        print(f"    authors:  {', '.join(a.name for a in p.authors[:3])}")
-        print(f"    journal:  {p.journal}")
-        print(f"    date:     {p.published_date}")
-        print(f"    abstract: {(p.abstract or '')[:120]}...")
-        print()
+    for paper in papers:
+        # 1. DOI match
+        if paper.doi and paper.doi in seen_dois:
+            _merge(seen_dois[paper.doi], paper)
+            continue
+
+        # 2. arXiv ID match
+        if paper.arxiv_id and paper.arxiv_id in seen_arxiv_ids:
+            _merge(seen_arxiv_ids[paper.arxiv_id], paper)
+            continue
+
+        # 3. Fuzzy title match against already-accepted papers
+        norm_title = _normalise_title(paper.title)
+        duplicate = False
+        for existing in result:
+            if levenshtein_distance(norm_title, _normalise_title(existing.title)) <= _TITLE_DISTANCE_THRESHOLD:
+                _merge(existing, paper)
+                duplicate = True
+                break
+        if duplicate:
+            continue
+
+        # Not a duplicate — accept and register
+        if paper.doi:
+            seen_dois[paper.doi] = paper
+        if paper.arxiv_id:
+            seen_arxiv_ids[paper.arxiv_id] = paper
+        result.append(paper)
+
+    return result
+
+
+# ── Orchestrator ───────────────────────────────────────────────────────────────
+
+
+async def run_fetch(
+    issns: list[str],
+    arxiv_categories: list[str],
+    from_date: date,
+    to_date: date,
+) -> list[Paper]:
+    """Fetch from all sources, deduplicate, and return the merged paper list."""
+    openalex_papers, arxiv_papers = await asyncio.gather(
+        fetch_openalex_papers(issns, from_date, to_date),
+        fetch_arxiv_papers(arxiv_categories, from_date, to_date),
+    )
+    all_papers = openalex_papers + arxiv_papers
+    deduped = deduplicate_papers(all_papers)
+    logger.info(
+        "Fetch complete: %d unique papers (from %d total)",
+        len(deduped), len(all_papers),
+    )
+    return deduped

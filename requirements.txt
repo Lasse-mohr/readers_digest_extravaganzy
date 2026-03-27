@@ -11,3 +11,5 @@ numpy
 python-levenshtein
 pyyaml
 jinja2
+pyalex
+python-dotenv
