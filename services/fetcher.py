@@ -256,6 +256,41 @@ def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
     return result
 
 
+# ── Backward-compatible arXiv fetch (returns shared.types.Paper) ──────────────
+
+
+async def fetch_arxiv(
+    categories: list[str],
+    date_from: date,
+    date_to: date,
+) -> list:
+    """
+    Fetch arXiv papers and return shared.types.Paper objects.
+    Used by run_digest.py and the scorer pipeline.
+    """
+    from shared.types import Author
+    from shared.types import Paper as SharedPaper
+
+    db_papers = await fetch_arxiv_papers(categories, date_from, date_to)
+    result = []
+    for p in db_papers:
+        authors = [Author(name=a.get("name", "")) for a in (p.authors or [])]
+        result.append(SharedPaper(
+            doi=p.doi,
+            arxiv_id=p.arxiv_id,
+            openalex_id=p.openalex_id,
+            title=p.title,
+            abstract=p.abstract,
+            authors=authors,
+            journal=p.journal,
+            journal_issn=None,
+            published_date=p.published_date,
+            source=p.source,
+            url=f"https://arxiv.org/abs/{p.arxiv_id}" if p.arxiv_id else None,
+        ))
+    return result
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────────
 
 
