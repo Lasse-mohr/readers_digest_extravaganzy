@@ -253,8 +253,12 @@ def score_papers(
         )
         author_bonus = w.priority_author_bonus if author_match else 0.0
 
-        # Bluesky bonus
-        bluesky_bonus = w.bluesky_mention_bonus if has_bluesky else 0.0
+        # Bluesky bonus — scaled by engagement (floor at 50% of bonus)
+        if has_bluesky:
+            max_eng = max(s.engagement_score for s in paper_sightings)
+            bluesky_bonus = w.bluesky_mention_bonus * (0.5 + 0.5 * max_eng)
+        else:
+            bluesky_bonus = 0.0
 
         final = (sim * w.semantic_similarity) + journal_bonus + author_bonus + bluesky_bonus
 
