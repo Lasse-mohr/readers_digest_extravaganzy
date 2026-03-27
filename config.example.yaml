@@ -81,3 +81,14 @@ digest:
   min_similarity_threshold: 0.20  # papers below this are dropped before scoring
   ollama_model: "qwen2.5:7b"   # must match a model you have pulled in Ollama
   ollama_host: "http://localhost:11434"
+
+# ── LinkedIn post generator ──────────────────────────────────────
+# Generates a thought-leadership LinkedIn post from each digest.
+# The post is saved to digests/linkedin_YYYY-MM-DD.txt.
+linkedin:
+  enabled: false            # set to true to generate a LinkedIn post
+  max_papers: 3             # how many top papers to highlight in the post
+  persona: |
+    You are a LinkedIn thought leader who turns cutting-edge research into
+    business wisdom. You're humble yet confident, always learning, and
+    everything you read somehow makes you a better leader and entrepreneur.
